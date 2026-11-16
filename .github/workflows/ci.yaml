@@ -1,0 +1,74 @@
+name: inventory-app-ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**"]
+  workflow_dispatch: {}          # also allows a manual run from the Actions tab
+
+permissions:
+  contents: write                # commit the new tag to deploy/
+  packages: write                # push the image to ghcr.io
+
+env:
+  IMAGE_NAME: inventory-app
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt
+      - name: Syntax and import check
+        run: |
+          python -m py_compile app/app.py
+          cd app && python -c "import app; print('import ok')"
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name and tag
+        id: meta
+        run: |
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          TAG=${GITHUB_SHA::7}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "image=ghcr.io/$OWNER/$IMAGE_NAME:$TAG" >> $GITHUB_OUTPUT
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          docker build -t ${{ steps.meta.outputs.image }} app/
+          docker push ${{ steps.meta.outputs.image }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update image tag and version in deploy/
+        run: |
+          IMAGE=${{ needs.build.outputs.image }}
+          TAG=${{ needs.build.outputs.tag }}
+          sed -i "s#image: ghcr.io/.*/inventory-app:.*#image: ${IMAGE}#" deploy/deployment.yaml
+          sed -i "/name: APP_VERSION/{n;s/value: .*/value: \"${TAG}\"/}" deploy/deployment.yaml
+          grep -nE 'image:|APP_VERSION' -A1 deploy/deployment.yaml
+      - name: Commit and push
+        run: |
+          git config user.name  "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add deploy/deployment.yaml
+          git commit -m "release inventory-app ${{ needs.build.outputs.tag }}"
+          git push
