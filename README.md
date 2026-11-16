@@ -1,4 +1,0 @@
-# sampleappargocd
-# sampleappargocd
-# sampleappargocd
-# sampleappargocd
